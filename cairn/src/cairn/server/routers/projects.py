@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException
 
 from cairn.server.db import get_conn
 from cairn.server.models import (
+    AbandonRequest,
+    AbandonResponse,
     CompleteRequest,
     CreateProjectRequest,
     Fact,
@@ -289,6 +291,83 @@ def complete_project(project_id: str, body: CompleteRequest):
             last_heartbeat_at=now,
             created_at=now,
             concluded_at=now,
+        )
+
+
+@router.post("/projects/{project_id}/abandon", response_model=AbandonResponse)
+def abandon_project(project_id: str, body: AbandonRequest):
+    """Abandon an active project.
+
+    Records the abandon reason as a fact and a terminal intent for audit, then
+    transitions the project to ``stopped``. Existing reason/intent claims are
+    released so the dispatcher stops scheduling immediately. The project can
+    later be reactivated by flipping status back to ``active`` via
+    ``PUT /projects/{id}/status`` once whatever was blocking it has been
+    resolved.
+    """
+    with get_conn() as conn:
+        check_project_active(conn, project_id)
+        expire_reason_leases(conn, project_id)
+        validate_facts_exist(conn, project_id, body.from_)
+        validate_goal_not_in_sources(body.from_)
+
+        now = utcnow()
+        fact_id = next_fact_id(conn, project_id)
+        intent_id = next_intent_id(conn, project_id)
+
+        fact_description = f"[ABANDONED] {body.reason}"
+        intent_description = f"abandon: {body.reason}"
+
+        conn.execute(
+            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
+            (fact_id, project_id, fact_description),
+        )
+        conn.execute(
+            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                intent_id,
+                project_id,
+                fact_id,
+                intent_description,
+                body.creator,
+                body.creator,
+                now,
+                now,
+                now,
+            ),
+        )
+        for source_id in body.from_:
+            conn.execute(
+                "INSERT INTO intent_sources (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
+                (intent_id, project_id, source_id),
+            )
+
+        # Release any in-flight intent claims so the dispatcher's running
+        # tasks return cleanly, then transition the project to stopped.
+        conn.execute(
+            "UPDATE intents SET worker = NULL WHERE project_id = ? AND concluded_at IS NULL",
+            (project_id,),
+        )
+        clear_project_reason(conn, project_id)
+        conn.execute(
+            "UPDATE projects SET status = 'stopped' WHERE id = ?",
+            (project_id,),
+        )
+
+        updated_project = conn.execute(
+            "SELECT * FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        updated_intent = conn.execute(
+            "SELECT * FROM intents WHERE id = ? AND project_id = ?",
+            (intent_id, project_id),
+        ).fetchone()
+        assert updated_project is not None
+        assert updated_intent is not None
+        return AbandonResponse(
+            project=project_meta_from_row(updated_project),
+            fact=Fact(id=fact_id, description=fact_description),
+            intent=intent_to_model(conn, updated_intent, project_id),
         )
 
 

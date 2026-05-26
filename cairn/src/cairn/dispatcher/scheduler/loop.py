@@ -14,6 +14,7 @@ from cairn.dispatcher.protocol.client import CairnClient
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.startup_healthcheck import format_failure_summary, run_startup_healthchecks
+from cairn.dispatcher.scheduler.stall import StallVerdict, detect_stall
 from cairn.dispatcher.scheduler.worker_select import choose_worker
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
 from cairn.dispatcher.tasks.explore import run_explore_task
@@ -25,6 +26,7 @@ UNHEALTHY_RETRY_AFTER_SECONDS = 5
 REJECTED_RETRY_AFTER_SECONDS = 5
 BOOTSTRAP_INTENT_DESCRIPTION = "bootstrap"
 BOOTSTRAP_INTENT_CREATOR = "dispatcher.bootstrap"
+STALL_ABANDON_CREATOR = "dispatcher.stall"
 
 
 @dataclass(slots=True)
@@ -212,6 +214,8 @@ class DispatcherLoop:
             if project.project.reason is not None:
                 return False
             return self._dispatch_initial_project(project)
+        if self._abandon_if_stalled(project):
+            return False
         running_intent_ids = self._project_running_explore_intents(summary.id)
         unclaimed_intents = [
             intent
@@ -283,6 +287,58 @@ class DispatcherLoop:
             )
             return False
         return self._dispatch_bootstrap(project, intent)
+
+    def _abandon_if_stalled(self, project: ProjectDetail) -> bool:
+        """Dispatcher-side safety net for runaway projects.
+
+        Runs after bootstrap and before any reason/explore dispatch. If the
+        per-project stall detector trips (intent quota exceeded or recent
+        facts are semantically repetitive), call the abandon API so the
+        project transitions to ``stopped`` and the loop stops spending
+        tokens on it. The reason LLM should normally catch this first via
+        the prompt-level abandon path; this guard exists for the cases
+        where the LLM keeps proposing intents anyway.
+
+        Returns True when the project was abandoned (so the caller skips
+        further dispatch this tick). Returns False on either "no stall" or
+        "abandon API call failed" -- in the failure case we log and let the
+        next tick retry, rather than escalate into the dispatcher.
+        """
+        verdict = detect_stall(project, self.config.runtime.stall)
+        if verdict is None:
+            return False
+        return self._submit_stall_abandon(project, verdict)
+
+    def _submit_stall_abandon(self, project: ProjectDetail, verdict: StallVerdict) -> bool:
+        project_id = project.project.id
+        response = self.client.abandon(
+            project_id,
+            verdict.evidence_fact_ids,
+            verdict.reason,
+            STALL_ABANDON_CREATOR,
+        )
+        if response.status_code == 403:
+            LOG.info(
+                "stall abandon skipped because project no longer active project=%s",
+                project_id,
+            )
+            return True
+        if not response.ok:
+            LOG.warning(
+                "stall abandon failed project=%s status=%s body=%s evidence=%s",
+                project_id,
+                response.status_code,
+                response.text,
+                verdict.evidence_fact_ids,
+            )
+            return False
+        LOG.warning(
+            "dispatcher auto-abandoned stalled project project=%s evidence=%s reason=%s",
+            project_id,
+            verdict.evidence_fact_ids,
+            verdict.reason,
+        )
+        return True
 
     def _dispatch_reason(self, project: ProjectDetail, export_yaml: str, trigger: str) -> bool:
         selection = self._select_worker(project.project.id, "reason")

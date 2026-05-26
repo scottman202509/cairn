@@ -28,5 +28,18 @@ def format_hints(hints: list[dict[str, Any]]) -> str:
     return format_json_block(hints)
 
 
+def format_available_workers(workers: list[dict[str, Any]]) -> str:
+    """Render the worker capability digest passed to reason prompts.
+
+    Each entry contains only fields the LLM needs: name, task_types,
+    capabilities. Returned as pretty JSON so the LLM can pattern-match keys
+    like `egress_zone` / `reachable_networks` / `tools` / `offensive_distro`.
+    Returns the literal string ``[]`` when no workers are configured.
+    """
+    if not workers:
+        return "[]"
+    return format_json_block(workers)
+
+
 def format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)

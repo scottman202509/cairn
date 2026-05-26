@@ -19,6 +19,15 @@ runtime:
   healthcheck_timeout: 20
   # Prompt set loaded from cairn/src/cairn/dispatcher/prompts/.
   prompt_group: "default"
+  # Dispatcher-side stall detector. Auto-abandons projects whose intent stream
+  # is going in circles (e.g. every explore concludes "still unreachable"),
+  # preventing token-burn loops. Set any threshold to 0 to disable that check.
+  stall:
+    enabled: true
+    max_intents_per_project: 80
+    repeat_window: 8
+    repeat_jaccard_threshold: 0.7
+    repeat_min_facts: 5
 
 tasks:
   bootstrap:
@@ -52,11 +61,23 @@ container:
 workers:
   # Worker priority is ascending: lower numbers are preferred first.
   # max_running is per-worker concurrency. Slower backends such as Pi usually benefit from lower values.
+  #
+  # `capabilities` is surfaced verbatim to the reason LLM so it can decide which
+  # intents are actually executable. Keep keys short and stable. Common keys:
+  #   egress_zone:        where the worker's network traffic originates from
+  #   reachable_networks: list of network labels this worker can reach
+  #   tools:              list of preinstalled tooling (nmap, sqlmap, msfconsole, ...)
+  #   offensive_distro:   true if this is a Kali/ParrotOS-style assessment env
   - name: "claudecode_deepseek-v4-pro"
     type: "claudecode"
     task_types: [bootstrap, reason, explore]
     max_running: 2
     priority: 0
+    capabilities:
+      egress_zone: "operator-host"
+      reachable_networks: ["public-internet-via-operator-host"]
+      tools: ["claude-code", "curl", "nmap", "python3"]
+      offensive_distro: false
     env:
       ANTHROPIC_MODEL: "deepseek-v4-pro"
       ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic"
@@ -67,6 +88,11 @@ workers:
     task_types: [bootstrap,reason,explore]
     max_running: 2
     priority: 0
+    capabilities:
+      egress_zone: "operator-host"
+      reachable_networks: ["public-internet-via-operator-host"]
+      tools: ["codex", "curl", "nmap", "python3"]
+      offensive_distro: false
     env:
       CODEX_MODEL: "qwen3.6-plus"
       CODEX_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -77,9 +103,67 @@ workers:
     task_types: [bootstrap,reason,explore]
     max_running: 2
     priority: 0
+    capabilities:
+      egress_zone: "operator-host"
+      reachable_networks: ["public-internet-via-operator-host"]
+      tools: ["pi", "curl", "nmap", "python3"]
+      offensive_distro: false
     env:
       PI_MODEL: "qwen3.6-plus"
       PI_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
       PI_API_KEY: "sk-xxx"
       PI_PROVIDER_API: "openai-completions"
       PI_MODEL_CONTEXT_WINDOW: "262144"
+
+  # Cursor backend. Uses Cursor's headless `cursor-agent` CLI so the
+  # project is billed against your Cursor subscription rather than a separate
+  # model-provider API key. Model namespace is Cursor's own
+  # (sonnet-4 / gpt-5 / gemini-3-flash / opus / ...) -- run
+  # `cursor-agent --list-models` to see what your account has access to.
+  #
+  # Prerequisites (NOT in the default worker container image):
+  #   1. cursor-agent CLI installed inside the worker container.
+  #      Install once:  curl https://cursor.com/install -fsS | bash
+  #      Then bake into a custom image, or volume-mount the binary.
+  #   2. A valid CURSOR_API_KEY from Settings → API Keys in the Cursor app.
+  # - name: "cursor_sonnet-4"
+  #   type: "cursor"
+  #   task_types: [bootstrap, reason, explore]
+  #   max_running: 2
+  #   priority: 0
+  #   capabilities:
+  #     egress_zone: "operator-host"
+  #     reachable_networks: ["public-internet-via-operator-host"]
+  #     tools: ["cursor-agent", "curl", "nmap", "python3"]
+  #     offensive_distro: false
+  #   env:
+  #     CURSOR_API_KEY: "key_xxx"
+  #     CURSOR_MODEL: "sonnet-4"
+
+  # Local Ollama backend. Uses Codex CLI's agent loop pointed at Ollama's
+  # OpenAI-compatible endpoint, so no cloud API key is needed.
+  #
+  # Prerequisites:
+  #   1. Ollama running locally:        ollama serve
+  #   2. A tool-calling capable model:  ollama pull qwen2.5:7b
+  #      (qwen2.5, qwen2.5-coder, llama3.1, llama3.2, mistral-nemo all work.
+  #       llama2/gemma/phi3 do NOT support tools and will spin without acting.)
+  #   3. With network_mode: host the URL is http://localhost:11434.
+  #      On Docker Desktop (macOS/Windows) use http://host.docker.internal:11434.
+  #
+  # Local 7B models are dramatically slower and less capable than cloud
+  # frontier models; keep max_running low and expect longer task budgets.
+  # - name: "ollama_qwen2.5"
+  #   type: "ollama"
+  #   task_types: [bootstrap, reason, explore]
+  #   max_running: 1
+  #   priority: 10
+  #   capabilities:
+  #     egress_zone: "operator-host"
+  #     reachable_networks: ["public-internet-via-operator-host"]
+  #     tools: ["codex", "curl", "nmap", "python3"]
+  #     offensive_distro: false
+  #     model_locality: "local"
+  #   env:
+  #     OLLAMA_MODEL: "qwen2.5:7b"
+  #     OLLAMA_BASE_URL: "http://localhost:11434"

@@ -37,6 +37,9 @@ def _looks_like_reason_data(payload: dict[str, Any]) -> bool:
     if keys == {"intent"}:
         intent = payload["intent"]
         return isinstance(intent, dict) and "from" in intent and "description" in intent
+    if keys == {"abandon"}:
+        abandon = payload["abandon"]
+        return isinstance(abandon, dict) and "from" in abandon and "reason" in abandon
     return False
 
 
@@ -72,18 +75,32 @@ def validate_reason_payload(
     if not isinstance(data, dict):
         raise ValueError("accepted must be true or false")
     complete = data.get("complete")
+    abandon = data.get("abandon")
     intents = data.get("intents")
     # backward compat: accept singular "intent" key from LLMs
     if intents is None:
         singular = data.get("intent")
         if isinstance(singular, dict):
             intents = [singular]
+    terminal_count = sum(1 for value in (complete, abandon) if value is not None)
+    if terminal_count > 1:
+        raise ValueError("complete and abandon cannot coexist")
+    if terminal_count and intents is not None:
+        raise ValueError("terminal outcome (complete/abandon) cannot coexist with intents")
     if complete is not None:
-        if intents is not None:
-            raise ValueError("complete and intents cannot coexist")
         if not isinstance(complete, dict) or "from" not in complete or "description" not in complete:
             raise ValueError("invalid complete payload")
         return "complete", complete
+    if abandon is not None:
+        if not isinstance(abandon, dict) or "from" not in abandon or "reason" not in abandon:
+            raise ValueError("invalid abandon payload")
+        from_value = abandon["from"]
+        if not isinstance(from_value, list) or not from_value:
+            raise ValueError("abandon.from must be a non-empty array")
+        reason_value = abandon["reason"]
+        if not isinstance(reason_value, str) or not reason_value.strip():
+            raise ValueError("abandon.reason must be a non-empty string")
+        return "abandon", {"from": from_value, "reason": reason_value.strip()}
     if intents is not None:
         if not isinstance(intents, list):
             raise ValueError("intents must be an array")

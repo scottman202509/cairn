@@ -6,6 +6,7 @@ import time
 from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.contracts import parse_json_output, validate_reason_payload
 from cairn.dispatcher.prompting import (
+    format_available_workers,
     format_fact_ids,
     format_open_intents,
     load_prompt,
@@ -108,6 +109,14 @@ def run_reason_task(
             len(project.hints),
             len(open_intents),
         )
+        available_workers = [
+            {
+                "name": w.name,
+                "task_types": list(w.task_types),
+                "capabilities": w.capabilities or {},
+            }
+            for w in config.workers
+        ]
         prompt = render_prompt(
             load_prompt(config.runtime.prompt_group, "reason.md"),
             {
@@ -120,6 +129,7 @@ def run_reason_task(
                 "fact_ids": format_fact_ids(allowed_fact_ids),
                 "open_intents": format_open_intents(open_intents),
                 "max_intents": str(config.tasks.reason.max_intents),
+                "available_workers": format_available_workers(available_workers),
             },
         )
 
@@ -228,6 +238,39 @@ def run_reason_task(
                 project.project.id,
                 worker.name,
                 data["from"],
+                execute_ms,
+                total_ms,
+            )
+            return "success"
+        if kind == "abandon":
+            response = client.abandon(
+                project.project.id,
+                data["from"],
+                data["reason"],
+                worker.name,
+            )
+            if response.status_code == 403:
+                LOG.info(
+                    "project became inactive during reason abandon project=%s worker=%s",
+                    project.project.id,
+                    worker.name,
+                )
+                return "success"
+            if not response.ok:
+                LOG.warning(
+                    "reason abandon write failed project=%s worker=%s status=%s body=%s",
+                    project.project.id,
+                    worker.name,
+                    response.status_code,
+                    response.text,
+                )
+                return "failed"
+            LOG.info(
+                "project abandoned project=%s worker=%s from=%s reason=%s execute_ms=%s total_ms=%s",
+                project.project.id,
+                worker.name,
+                data["from"],
+                preview(data["reason"]),
                 execute_ms,
                 total_ms,
             )

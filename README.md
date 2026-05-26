@@ -103,7 +103,7 @@ System architecture:
 
 **Cairn Dispatcher** reads the graph, schedules tasks, spins up and tears down worker containers, and is the sole writer to the protocol. Each project gets its own Worker Container; multiple Agent Workers run concurrently inside it. Agent Workers only receive a prompt and return structured output.
 
-Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
+Supported worker backends: **Claude Code**, **Codex**, **Pi**, **Cursor** (via the headless `cursor-agent` CLI, billed against your Cursor subscription), and **Ollama** (local, via Codex CLI pointed at the OpenAI-compatible endpoint). See the commented `cursor_sonnet-4` and `ollama_qwen2.5` examples in `dispatch.yaml`.
 
 ## Results
 

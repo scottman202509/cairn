@@ -240,3 +240,45 @@ class ReopenResponse(BaseModel):
     project: ProjectMeta
     fact: Fact
     intent: Intent
+
+
+class AbandonRequest(BaseModel):
+    """Request body for POST /projects/{id}/abandon.
+
+    Abandon is a terminal-but-recoverable stop: the project goes to ``stopped``
+    status with a fact recording why we gave up. Use this when reasoning has
+    concluded the current path is infeasible from available workers and human
+    intervention (new hint, new worker capability, env change) is required
+    before further exploration can produce value.
+    """
+
+    from_: list[str] = Field(alias="from", min_length=1)
+    reason: str
+    creator: str
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("reason", "creator")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be empty")
+        return text
+
+    @field_validator("from_")
+    @classmethod
+    def validate_fact_ids(cls, value: list[str]) -> list[str]:
+        cleaned = []
+        for item in value:
+            text = item.strip()
+            if not text:
+                raise ValueError("fact ids must not be empty")
+            cleaned.append(text)
+        return cleaned
+
+
+class AbandonResponse(BaseModel):
+    project: ProjectMeta
+    fact: Fact
+    intent: Intent

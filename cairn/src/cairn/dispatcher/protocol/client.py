@@ -121,6 +121,13 @@ class CairnClient:
             json={"from": from_ids, "description": description, "worker": worker},
         )
 
+    def abandon(self, project_id: str, from_ids: list[str], reason: str, creator: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/abandon",
+            json={"from": from_ids, "reason": reason, "creator": creator},
+        )
+
     def create_intent(self, project_id: str, from_ids: list[str], description: str, creator: str) -> ApiResult:
         return self._request_json(
             "POST",

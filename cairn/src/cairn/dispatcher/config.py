@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 TaskType = Literal["reason", "explore", "bootstrap"]
-WorkerType = Literal["claudecode", "codex", "pi", "mock"]
+WorkerType = Literal["claudecode", "codex", "cursor", "ollama", "pi", "mock"]
 CompletedAction = Literal["remove", "stop"]
 
 WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
@@ -25,6 +25,23 @@ WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
         "CODEX_BASE_URL",
         "OPENAI_API_KEY",
     ),
+    # Cursor's headless cursor-agent CLI reads CURSOR_API_KEY from env
+    # automatically; CURSOR_MODEL picks which model the Cursor subscription
+    # should bill (e.g. sonnet-4, gpt-5, gemini-3-flash, opus). Run
+    # `cursor-agent --list-models` to see what's available on the account.
+    "cursor": (
+        "CURSOR_API_KEY",
+        "CURSOR_MODEL",
+    ),
+    # Ollama backs onto a local OpenAI-compatible endpoint, so no API key is
+    # required. The driver injects a dummy OLLAMA_API_KEY at runtime to satisfy
+    # Codex CLI's bookkeeping. OLLAMA_BASE_URL should be the server root
+    # (typically http://localhost:11434 with network_mode: host, or
+    # http://host.docker.internal:11434 on Docker Desktop).
+    "ollama": (
+        "OLLAMA_MODEL",
+        "OLLAMA_BASE_URL",
+    ),
     "pi": (
         "PI_MODEL",
         "PI_BASE_URL",
@@ -35,7 +52,7 @@ WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
 }
 
 DEFAULT_PROMPT_REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
-    "reason.md": ("{graph_yaml}", "{fact_ids}", "{open_intents}", "{max_intents}"),
+    "reason.md": ("{graph_yaml}", "{fact_ids}", "{open_intents}", "{max_intents}", "{available_workers}"),
     "explore.md": ("{graph_yaml}", "{intent_id}", "{intent_description}"),
     "explore_conclude.md": ("{graph_yaml}", "{intent_id}", "{intent_description}"),
     "bootstrap.md": ("{origin}", "{goal}", "{hints}"),
@@ -154,6 +171,29 @@ class ContainerConfig(BaseModel):
     cap_add: list[str] = Field(default_factory=list)
 
 
+class StallConfig(BaseModel):
+    """Knobs for the dispatcher-side stall detector that auto-abandons projects
+    whose intent stream is going in circles. Set ``enabled: false`` to disable
+    every check; individual checks can be disabled by setting their threshold
+    to 0."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # Absolute cap on the number of intents a single project may accumulate
+    # before the dispatcher gives up and abandons it. 0 disables the check.
+    max_intents_per_project: int = Field(ge=0, default=80)
+    # How many of the most recent concluded fact descriptions to consider when
+    # looking for repetition. 0 disables the check.
+    repeat_window: int = Field(ge=0, default=8)
+    # Average pairwise Jaccard token overlap above which the recent fact
+    # window is considered repetitive. Range 0.0 - 1.0.
+    repeat_jaccard_threshold: float = Field(ge=0.0, le=1.0, default=0.7)
+    # Minimum number of recent concluded facts required before the repeat
+    # check is allowed to fire (must be <= repeat_window).
+    repeat_min_facts: int = Field(ge=2, default=5)
+
+
 class RuntimeConfig(BaseModel):
     max_workers: int = Field(gt=0)
     max_running_projects: int = Field(gt=0)
@@ -161,6 +201,15 @@ class RuntimeConfig(BaseModel):
     interval: int = Field(gt=0)
     healthcheck_timeout: int = Field(gt=0)
     prompt_group: str = Field(min_length=1)
+    stall: StallConfig = Field(default_factory=StallConfig)
+
+    @model_validator(mode="after")
+    def validate_stall(self) -> "RuntimeConfig":
+        if self.stall.repeat_min_facts > self.stall.repeat_window and self.stall.repeat_window > 0:
+            raise ValueError(
+                f"stall.repeat_min_facts ({self.stall.repeat_min_facts}) must be <= stall.repeat_window ({self.stall.repeat_window})"
+            )
+        return self
 
 
 class WorkerConfig(BaseModel):
@@ -172,6 +221,11 @@ class WorkerConfig(BaseModel):
     max_running: int = Field(gt=0)
     priority: int = Field(ge=0)
     env: dict[str, str] = Field(default_factory=dict)
+    # Free-form capability labels surfaced verbatim to the reason LLM so it can
+    # decide which intents are actually executable. Convention is short scalar
+    # values (strings/lists/bools), e.g. egress_zone: mac-home,
+    # tools: [nmap, curl, sqlmap], offensive_distro: false.
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("task_types")
     @classmethod

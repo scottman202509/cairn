@@ -362,6 +362,15 @@
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24"><path d="M14.25 3H7.5A2.25 2.25 0 0 0 5.25 5.25v13.5A2.25 2.25 0 0 0 7.5 21h9a2.25 2.25 0 0 0 2.25-2.25V8.25L14.25 3Z"/><path d="M14.25 3v5.25h4.5"/><path d="M8.25 12h7.5M8.25 15h5.25"/></svg>
                 Snapshot
               </button>
+              <button type="button" @click.stop="downloadProjectExport(p.id, 'markdown')"
+                class="px-2 py-1 rounded-lg border text-[11px] transition flex items-center gap-1"
+                :class="['stopped','completed'].includes(p.status)
+                  ? 'border-emerald-300 bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm shadow-emerald-200'
+                  : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700'"
+                :title="['stopped','completed'].includes(p.status) ? 'Task ended — download the full markdown test report' : 'Download the full markdown test report (partial while task is running)'">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                Report
+              </button>
               <template x-if="p.status !== 'completed'">
                 <button type="button" @click.stop="toggleProjectStopById(p.id, p.status)"
                   class="px-2 py-1 rounded-lg border text-[11px] transition flex items-center gap-1"
@@ -448,6 +457,18 @@
       <button @click="viewProjectYaml(selectedProjectId, project.project.title)" class="px-2.5 py-1 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition flex items-center gap-1.5">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24"><path d="M14.25 3H7.5A2.25 2.25 0 0 0 5.25 5.25v13.5A2.25 2.25 0 0 0 7.5 21h9a2.25 2.25 0 0 0 2.25-2.25V8.25L14.25 3Z"/><path d="M14.25 3v5.25h4.5"/><path d="M8.25 12h7.5M8.25 15h5.25"/></svg>
         Snapshot
+      </button>
+      <!-- Download Report: visible always so partial reports are available
+           mid-run; gets a brighter "task is done" treatment once the project
+           is stopped or completed (the user-facing "task ended" condition). -->
+      <button @click="downloadProjectExport(selectedProjectId, 'markdown')"
+        class="px-2.5 py-1 rounded-lg border text-xs transition flex items-center gap-1.5"
+        :class="['stopped','completed'].includes(project.project.status)
+          ? 'border-emerald-300 bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm shadow-emerald-200'
+          : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700'"
+        :title="['stopped','completed'].includes(project.project.status) ? 'Task ended — download the full markdown test report' : 'Download the full markdown test report (partial while task is running)'">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        <span>Report</span>
       </button>
       <template x-if="!replay.active && project.project.status !== 'completed'">
         <button @click="toggleProjectStop()"
@@ -1011,10 +1032,16 @@
             :class="exportTab === 'yaml' ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:text-slate-600'">YAML</button>
           <button @click="switchExportTab('timeline')" class="px-2.5 py-1 text-xs font-medium transition"
             :class="exportTab === 'timeline' ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:text-slate-600'">Timeline</button>
+          <button @click="switchExportTab('markdown')" class="px-2.5 py-1 text-xs font-medium transition"
+            :class="exportTab === 'markdown' ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:text-slate-600'">Report</button>
         </div>
         <p class="text-xs text-slate-400 truncate" x-text="yamlPreviewTitle"></p>
       </div>
       <div class="flex items-center gap-2">
+        <button @click="downloadExportTab()" class="px-3 py-1.5 text-sm rounded-xl font-medium transition flex items-center gap-1.5 bg-brand-500 text-white hover:bg-brand-600 shadow-sm shadow-brand-200">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          <span>Download</span>
+        </button>
         <button @click="copyYamlPreview()" class="px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Copy</button>
         <button @click="showYamlModal = false" class="px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Close</button>
       </div>
@@ -1536,10 +1563,95 @@ function cairnApp() {
       try {
         const text = await this.fetchText(`/projects/${this.exportProjectId}/export?format=${tab}`);
         this.yamlPreviewText = text;
-        this.yamlPreviewHtml = tab === 'yaml' ? this.highlightYaml(text) : this.highlightTimeline(text);
+        if (tab === 'yaml') {
+          this.yamlPreviewHtml = this.highlightYaml(text);
+        } else if (tab === 'timeline') {
+          this.yamlPreviewHtml = this.highlightTimeline(text);
+        } else {
+          this.yamlPreviewHtml = this.highlightMarkdown(text);
+        }
       } catch (e) {
         this.showToast(e.message, 'error');
       }
+    },
+
+    // Trigger a browser download of the currently-open export tab. We could
+    // synthesize a Blob from yamlPreviewText, but routing through the server
+    // with ?download=1 lets the backend control the filename (project id +
+    // slugged title, RFC 5987 unicode fallback) and keeps a single source of
+    // truth for naming.
+    downloadExportTab() {
+      if (!this.exportProjectId) return;
+      this.downloadProjectExport(this.exportProjectId, this.exportTab);
+    },
+
+    downloadProjectExport(projectId, format = 'markdown') {
+      if (!projectId) return;
+      const url = `/projects/${projectId}/export?format=${encodeURIComponent(format)}&download=1`;
+      // Using a transient anchor click is more reliable than location.assign
+      // here: it preserves the current SPA state and lets the browser honor
+      // the server-supplied Content-Disposition without a navigation flash.
+      const a = document.createElement('a');
+      a.href = url;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    },
+
+    // Render the markdown report as syntax-tinted plaintext: we don't pull in
+    // a markdown library, we just visually distinguish headings / list items /
+    // code fences so the preview reads better than a raw blob.
+    highlightMarkdown(text) {
+      const lines = String(text ?? '').split('\n');
+      let inFence = false;
+      return lines.map((line) => {
+        const trimmed = line.replace(/\s+$/, '');
+        const isBlank = /^\s*$/.test(line);
+
+        // Toggle code-fence state. The fence line itself stays visible.
+        const isFence = /^\s*```/.test(line);
+        if (isFence) {
+          const out = `<div style="white-space:pre;padding:0 16px;background:#f1f5f9;color:#475569">${this.escapeHtml(trimmed)}</div>`;
+          inFence = !inFence;
+          return out;
+        }
+
+        if (inFence) {
+          return `<div style="white-space:pre;padding:0 16px;background:#f8fafc;color:#0f172a">${isBlank ? '&nbsp;' : this.escapeHtml(line)}</div>`;
+        }
+
+        if (isBlank) {
+          return `<div style="white-space:pre;padding:0 16px">&nbsp;</div>`;
+        }
+
+        // Headings — graded weight so h1/h2/h3 step down visually.
+        const h = line.match(/^(#{1,6})\s+(.*)$/);
+        if (h) {
+          const level = h[1].length;
+          const sizes = ['16px', '15px', '14px', '13px', '13px', '13px'];
+          const weights = ['700', '700', '600', '600', '500', '500'];
+          const colors = ['#0f172a', '#0f172a', '#1e293b', '#334155', '#475569', '#64748b'];
+          return `<div style="white-space:pre;padding:6px 16px 2px;background:transparent;color:${colors[level-1]};font-size:${sizes[level-1]};font-weight:${weights[level-1]}">${this.escapeHtml(line)}</div>`;
+        }
+
+        // Block quote.
+        if (/^\s*&gt;|^\s*>/.test(line)) {
+          return `<div style="white-space:pre;padding:0 16px;border-left:3px solid #cbd5f5;background:#f8fafc;color:#475569">${this.escapeHtml(line)}</div>`;
+        }
+
+        // Table separator / row — keep simple, just tint.
+        if (/^\s*\|/.test(line)) {
+          return `<div style="white-space:pre;padding:0 16px;background:#fafafa;color:#1e293b">${this.escapeHtml(line)}</div>`;
+        }
+
+        // Unordered list item.
+        if (/^\s*[-*]\s+/.test(line)) {
+          return `<div style="white-space:pre;padding:0 16px;color:#0f172a">${this.escapeHtml(line)}</div>`;
+        }
+
+        return `<div style="white-space:pre;padding:0 16px;color:#1f2937">${this.escapeHtml(line)}</div>`;
+      }).join('');
     },
 
     deleteProject() {
